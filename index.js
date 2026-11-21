@@ -1,6 +1,8 @@
 // Simpan di: api/sub2unlock.js
 // Endpoint: https://domain-lo.vercel.app/api/sub2unlock?url=https://sub2unlock.io/xxx
 
+const crypto = require('crypto');
+
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 module.exports = async (req, res) => {
@@ -26,7 +28,7 @@ module.exports = async (req, res) => {
 
     // --- Eksekusi ---
     try {
-        const finalUrl = await bypassSub2Unlock(targetUrl);
+        const finalUrl = await bypassSubUnlock(targetUrl);
         return res.status(200).json({
             status: "success",
             original: targetUrl,
@@ -41,10 +43,9 @@ module.exports = async (req, res) => {
 };
 
 // ==========================================
-// LOGIC BYPASS
+// LOGIC BYPASS SUB2UNLOCK (FIXED)
 // ==========================================
-async function bypassSub2Unlock(inputUrl) {
-    // 1. Fetch halaman
+async function bypassSubUnlock(inputUrl) {
     const response = await fetch(inputUrl, {
         headers: {
             "user-agent": UA,
@@ -53,35 +54,55 @@ async function bypassSub2Unlock(inputUrl) {
         }
     });
 
-    if (!response.ok) {
-        throw new Error(`HTTP ${response.status} saat fetch target`);
-    }
+    if (!response.ok) throw new Error(`HTTP ${response.status} saat fetch target`);
     
     const html = await response.text();
     
-    // 2. Ekstrak URL target (Regex)
-    // Prioritas 1: <a class="get-link" href="...">
-    let match = html.match(/<a[^>]+class=["'][^"']*get-link[^"']*["'][^>]+href=["']([^"']+)["']/i);
-    
-    // Prioritas 2: Posisi href sebelum class
-    if (!match) {
-        match = html.match(/<a[^>]+href=["']([^"']+)["'][^>]+class=["'][^"']*get-link[^"']*["']/i);
+    // Daftar domain yang harus diabaikan (bukan link tujuan)
+    const blacklist = [
+        "fonts.googleapis.com", "fonts.gstatic.com", "cdnjs.cloudflare.com",
+        "google.com", "googleapis.com", "gstatic.com", "cloudflare.com",
+        "bootstrapcdn.com", "jquery.com", "w3.org", "schema.org",
+        "sub2unlock", "sub4unlock", "link2unlock"
+    ];
+
+    const isClean = (url) => !blacklist.some(b => url.includes(b));
+
+    // 1. Cari tag <a> dengan class "get-link"
+    let matches = html.match(/<a[^>]+class=["'][^"']*get-link[^"']*["'][^>]+href=["']([^"']+)["']/gi);
+    if (matches) {
+        for (let m of matches) {
+            let link = m.match(/href=["']([^"']+)["']/i);
+            if (link && isClean(link[1])) return link[1].replace(/&amp;/g, '&');
+        }
     }
     
-    // Prioritas 3: Link luar (bukan sub2unlock)
-    if (!match) {
-        match = html.match(/href=["'](https?:\/\/(?!sub2unlock|link2unlock)[^"']+)["']/i);
-    }
-    
-    // Prioritas 4: Meta Refresh
-    if (!match) {
-        match = html.match(/http-equiv=["']refresh["'][^>]+content=["'][^"']*url=([^"']+)["']/i);
+    // 2. Cari tag <a> dengan href lalu class "get-link" (urutan terbalik)
+    matches = html.match(/<a[^>]+href=["']([^"']+)["'][^>]+class=["'][^"']*get-link[^"']*["']/gi);
+    if (matches) {
+        for (let m of matches) {
+            let link = m.match(/href=["']([^"']+)["']/i);
+            if (link && isClean(link[1])) return link[1].replace(/&amp;/g, '&');
+        }
     }
 
-    if (!match) {
-        throw new Error("Gagal menemukan URL target di halaman sub2unlock");
+    // 3. Fallback: Cari semua href http/https yang bukan blacklist
+    matches = html.match(/href=["'](https?:\/\/[^"']+)["']/gi);
+    if (matches) {
+        for (let m of matches) {
+            let link = m.match(/href=["']([^"']+)["']/i);
+            if (link && isClean(link[1])) {
+                return link[1].replace(/&amp;/g, '&');
+            }
+        }
     }
-    
-    // Decode HTML entity (kayak &amp; jadi &)
-    return match[1].replace(/&amp;/g, '&');
+
+    // 4. Fallback terakhir: Cari di dalam script (kadang link disimpan di variable JS)
+    const scriptRegex = /(?:var|let|const)\s+\w+\s*=\s*["'](https?:\/\/(?!sub2unlock|link2unlock|sub4unlock)[^"']+)["']/i;
+    const scriptMatch = html.match(scriptRegex);
+    if (scriptMatch) {
+        return scriptMatch[1].replace(/&amp;/g, '&');
+    }
+
+    throw new Error("Link target asli tidak ditemukan di HTML statis. Kemungkinan target butuh eksekusi JavaScript/social action atau halaman dilindungi Cloudflare.");
 }
